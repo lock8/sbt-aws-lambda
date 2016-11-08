@@ -33,7 +33,8 @@ object AwsLambdaPlugin extends AutoPlugin {
       s3KeyPrefix = s3KeyPrefix.?.value,
       lambdaName = lambdaName.value,
       handlerName = handlerName.value,
-      lambdaHandlers = lambdaHandlers.value
+      lambdaHandlers = lambdaHandlers.value,
+      logger = sbt.Keys.streams.value.log
     ),
     createLambda := doCreateLambda(
       region = region.value,
@@ -58,18 +59,22 @@ object AwsLambdaPlugin extends AutoPlugin {
   )
 
   private def doUpdateLambda(region: Option[String], jar: File, s3Bucket: Option[String], s3KeyPrefix: Option[String], lambdaName: Option[String],
-      handlerName: Option[String], lambdaHandlers: Seq[(String, String)]): Map[String, LambdaARN] = {
+      handlerName: Option[String], lambdaHandlers: Seq[(String, String)],
+      logger: Logger): Map[String, LambdaARN] = {
     val resolvedRegion = resolveRegion(region)
     val resolvedBucketId = resolveBucketId(s3Bucket)
     val resolvedS3KeyPrefix = resolveS3KeyPrefix(s3KeyPrefix)
     val resolvedLambdaHandlers = resolveLambdaHandlers(lambdaName, handlerName, lambdaHandlers)
 
+    logger.info(s"Publishing $jar to $resolvedBucketId as $resolvedS3KeyPrefix")
     val s3Key = publishToS3(jar, resolvedBucketId, resolvedS3KeyPrefix)
 
     (for (resolvedLambdaName <- resolvedLambdaHandlers.keys) yield {
+      logger.info(s"Updating $resolvedLambdaName")
       val (codeSha, arn) = requestUpdateLambda(resolvedRegion, resolvedLambdaName, resolvedBucketId, s3Key)
       if (confirmPublishingNewVersion(codeSha, arn)) {
         val description = promptUserForVersionDescription()
+        logger.info(s"Publishing new version of $resolvedLambdaName")
         requestPublishVersion(resolvedRegion, resolvedLambdaName, codeSha, description)
       }
       resolvedLambdaName.value -> LambdaARN(arn)
@@ -206,24 +211,24 @@ object AwsLambdaPlugin extends AutoPlugin {
   }
 
   private def confirmPublishingNewVersion(codeSha: String, arn: String): Boolean = {
-    val publishNewVersion = readInput(s"Publish version $codeSha to $arn? (y/n)")
+    val publishNewVersion = readInput(s"Publish version $codeSha to $arn? (y/n)", false)
     publishNewVersion == "y"
   }
 
   private def promptUserForVersionDescription(): String =
-    readInput(s"Enter version description")
+    readInput(s"Enter version description (one line) and then hit Enter:")
 
   private def readRoleARN(): RoleARN = {
     val inputValue = readInput(s"Enter the ARN of the IAM role for the Lambda. (You also could have set the environment variable: ${EnvironmentVariables.roleArn} or the sbt setting: roleArn)")
     RoleARN(inputValue)
   }
 
-  private def readInput(prompt: String): String =
-    SimpleReader.readLine(s"$prompt\n") getOrElse {
+  private def readInput(prompt: String, newLine: Boolean = true): String = {
+    val realPrompt = if (newLine) s"$prompt\n" else s"$prompt "
+    SimpleReader.readLine(realPrompt) getOrElse {
       val badInputMessage = "Unable to read input"
-
       val updatedPrompt = if(prompt.startsWith(badInputMessage)) prompt else s"$badInputMessage\n$prompt"
-
       readInput(updatedPrompt)
     }
+  }
 }
