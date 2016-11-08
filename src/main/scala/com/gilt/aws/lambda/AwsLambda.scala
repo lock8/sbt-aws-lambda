@@ -22,9 +22,7 @@ private[lambda] object AwsLambda {
         r
       }
 
-      val updateResult = client.updateFunctionCode(request)
-      println(s"Updated lambda ${updateResult.getFunctionArn}")
-      updateResult
+      client.updateFunctionCode(request)
     }
 
   def publishVersion(region: Region, lambdaName: LambdaName, codeSha: String, description: String): Try[PublishVersionResult] =
@@ -36,9 +34,7 @@ private[lambda] object AwsLambda {
         withCodeSha256(codeSha).
         withDescription(description)
 
-      val result = client.publishVersion(request)
-      println(s"Published version $codeSha to ${result.getFunctionArn}")
-      result
+      client.publishVersion(request)
     }
 
   def createLambda(region: Region,

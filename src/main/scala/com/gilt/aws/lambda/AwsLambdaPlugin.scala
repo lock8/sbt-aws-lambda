@@ -58,25 +58,29 @@ object AwsLambdaPlugin extends AutoPlugin {
     awsLambdaTimeout := None
   )
 
-  private def doUpdateLambda(region: Option[String], jar: File, s3Bucket: Option[String], s3KeyPrefix: Option[String], lambdaName: Option[String],
+  private def doUpdateLambda(region: Option[String], jar: File,
+      s3Bucket: Option[String], s3KeyPrefix: Option[String], lambdaName: Option[String],
       handlerName: Option[String], lambdaHandlers: Seq[(String, String)],
       logger: Logger): Map[String, LambdaARN] = {
+
     val resolvedRegion = resolveRegion(region)
     val resolvedBucketId = resolveBucketId(s3Bucket)
     val resolvedS3KeyPrefix = resolveS3KeyPrefix(s3KeyPrefix)
     val resolvedLambdaHandlers = resolveLambdaHandlers(lambdaName, handlerName, lambdaHandlers)
 
-    logger.info(s"Publishing $jar to $resolvedBucketId as $resolvedS3KeyPrefix")
+    logger.info(s"Publishing '${jar.getName}' to '${resolvedBucketId.value}'")
     val s3Key = publishToS3(jar, resolvedBucketId, resolvedS3KeyPrefix)
 
     (for (resolvedLambdaName <- resolvedLambdaHandlers.keys) yield {
-      logger.info(s"Updating $resolvedLambdaName")
+      logger.info(s"Updating '${resolvedLambdaName.value}'")
       val (codeSha, arn) = requestUpdateLambda(resolvedRegion, resolvedLambdaName, resolvedBucketId, s3Key)
+
       if (confirmPublishingNewVersion(codeSha, arn)) {
         val description = promptUserForVersionDescription()
-        logger.info(s"Publishing new version of $resolvedLambdaName")
+        logger.info(s"Publishing new version of '${resolvedLambdaName.value}'")
         requestPublishVersion(resolvedRegion, resolvedLambdaName, codeSha, description)
       }
+
       resolvedLambdaName.value -> LambdaARN(arn)
     }).toMap
   }
@@ -211,7 +215,7 @@ object AwsLambdaPlugin extends AutoPlugin {
   }
 
   private def confirmPublishingNewVersion(codeSha: String, arn: String): Boolean = {
-    val publishNewVersion = readInput(s"Publish version $codeSha to $arn? (y/n)", false)
+    val publishNewVersion = readInput(s"Publish new version of '$arn'? (y/n)", false)
     publishNewVersion == "y"
   }
 
