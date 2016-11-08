@@ -9,10 +9,9 @@ import sbt._
 import scala.util.{Try, Failure, Success}
 
 private[lambda] object AwsLambda {
-  def updateLambda(region: Region, lambdaName: LambdaName, bucketId: S3BucketId, s3Key: S3Key): Try[UpdateFunctionCodeResult] = {
-    try {
-      val client = new AWSLambdaClient(AwsCredentials.provider)
-      client.setRegion(RegionUtils.getRegion(region.value))
+  def updateLambda(region: Region, lambdaName: LambdaName, bucketId: S3BucketId, s3Key: S3Key): Try[UpdateFunctionCodeResult] =
+    catchingAmazonExceptions {
+      val client = getClientFor(region)
 
       val request = {
         val r = new UpdateFunctionCodeRequest()
@@ -24,16 +23,23 @@ private[lambda] object AwsLambda {
       }
 
       val updateResult = client.updateFunctionCode(request)
-
       println(s"Updated lambda ${updateResult.getFunctionArn}")
-      Success(updateResult)
+      updateResult
     }
-    catch {
-      case ex @ (_ : AmazonClientException |
-                 _ : AmazonServiceException) =>
-        Failure(ex)
+
+  def publishVersion(region: Region, lambdaName: LambdaName, codeSha: String, description: String): Try[PublishVersionResult] =
+    catchingAmazonExceptions {
+      val client = getClientFor(region)
+
+      val request = new PublishVersionRequest().
+        withFunctionName(lambdaName.value).
+        withCodeSha256(codeSha).
+        withDescription(description)
+
+      val result = client.publishVersion(request)
+      println(s"Published version $codeSha to ${result.getFunctionArn}")
+      result
     }
-  }
 
   def createLambda(region: Region,
                    jar: File,
@@ -43,10 +49,8 @@ private[lambda] object AwsLambda {
                    s3BucketId: S3BucketId,
                    timeout:  Option[Timeout],
                    memory: Option[Memory]
-                    ): Try[CreateFunctionResult] = {
-    try {
-      val client = new AWSLambdaClient(AwsCredentials.provider)
-      client.setRegion(RegionUtils.getRegion(region.value))
+                    ): Try[CreateFunctionResult] = catchingAmazonExceptions {
+      val client = getClientFor(region)
 
       val request = {
         val r = new CreateFunctionRequest()
@@ -70,15 +74,22 @@ private[lambda] object AwsLambda {
       }
 
       val createResult = client.createFunction(request)
-
       println(s"Created Lambda: ${createResult.getFunctionArn}")
-      Success(createResult)
+      createResult
     }
-    catch {
+
+  private def getClientFor(region: Region): AWSLambdaClient = {
+      val client = new AWSLambdaClient(AwsCredentials.provider)
+      client.setRegion(RegionUtils.getRegion(region.value))
+      client
+  }
+
+  private def catchingAmazonExceptions[T](body: => T): Try[T] =
+    try {
+      Success(body)
+    } catch {
       case ex @ (_ : AmazonClientException |
                  _ : AmazonServiceException) =>
         Failure(ex)
     }
-  }
-
 }

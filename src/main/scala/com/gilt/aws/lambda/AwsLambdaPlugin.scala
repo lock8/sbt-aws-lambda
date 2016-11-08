@@ -57,28 +57,26 @@ object AwsLambdaPlugin extends AutoPlugin {
     awsLambdaTimeout := None
   )
 
-  private def doUpdateLambda(region: Option[String], jar: File, s3Bucket: Option[String], s3KeyPrefix: Option[String], lambdaName: Option[String], 
+  private def doUpdateLambda(region: Option[String], jar: File, s3Bucket: Option[String], s3KeyPrefix: Option[String], lambdaName: Option[String],
       handlerName: Option[String], lambdaHandlers: Seq[(String, String)]): Map[String, LambdaARN] = {
     val resolvedRegion = resolveRegion(region)
     val resolvedBucketId = resolveBucketId(s3Bucket)
     val resolvedS3KeyPrefix = resolveS3KeyPrefix(s3KeyPrefix)
     val resolvedLambdaHandlers = resolveLambdaHandlers(lambdaName, handlerName, lambdaHandlers)
 
-    AwsS3.pushJarToS3(jar, resolvedBucketId, resolvedS3KeyPrefix) match {
-      case Success(s3Key) => (for (resolvedLambdaName <- resolvedLambdaHandlers.keys) yield {
-        AwsLambda.updateLambda(resolvedRegion, resolvedLambdaName, resolvedBucketId, s3Key) match {
-          case Success(updateFunctionCodeResult) =>
-            resolvedLambdaName.value -> LambdaARN(updateFunctionCodeResult.getFunctionArn)
-          case Failure(exception) =>
-            sys.error(s"Error updating lambda: ${exception.getLocalizedMessage}\n${exception.getStackTraceString}")
-        }
-      }).toMap
-      case Failure(exception) =>
-        sys.error(s"Error uploading jar to S3 lambda: ${exception.getLocalizedMessage}\n${exception.getStackTraceString}")
-    }
+    val s3Key = publishToS3(jar, resolvedBucketId, resolvedS3KeyPrefix)
+
+    (for (resolvedLambdaName <- resolvedLambdaHandlers.keys) yield {
+      val (codeSha, arn) = requestUpdateLambda(resolvedRegion, resolvedLambdaName, resolvedBucketId, s3Key)
+      if (confirmPublishingNewVersion(codeSha, arn)) {
+        val description = promptUserForVersionDescription()
+        requestPublishVersion(resolvedRegion, resolvedLambdaName, codeSha, description)
+      }
+      resolvedLambdaName.value -> LambdaARN(arn)
+    }).toMap
   }
 
-  private def doCreateLambda(region: Option[String], jar: File, s3Bucket: Option[String], s3KeyPrefix: Option[String], lambdaName: Option[String], 
+  private def doCreateLambda(region: Option[String], jar: File, s3Bucket: Option[String], s3KeyPrefix: Option[String], lambdaName: Option[String],
       handlerName: Option[String], lambdaHandlers: Seq[(String, String)], roleArn: Option[String], timeout: Option[Int], memory: Option[Int]): Map[String, LambdaARN] = {
     val resolvedRegion = resolveRegion(region)
     val resolvedLambdaHandlers = resolveLambdaHandlers(lambdaName, handlerName, lambdaHandlers)
@@ -102,6 +100,28 @@ object AwsLambdaPlugin extends AutoPlugin {
         sys.error(s"Error upload jar to S3 lambda: ${exception.getLocalizedMessage}\n${exception.getStackTraceString}")
     }
   }
+
+  private def publishToS3(jar: File, bucketId: S3BucketId, keyPrefix: String): S3Key =
+    AwsS3.pushJarToS3(jar, bucketId, keyPrefix) match {
+      case Success(s3key) => s3key
+      case Failure(exception) =>
+        sys.error(s"Failed to create lambda function: ${exception.getLocalizedMessage}\n${exception.getStackTraceString}")
+    }
+
+  private def requestUpdateLambda(region: Region, lambdaName: LambdaName, bucketId: S3BucketId, key: S3Key): (String, String) =
+    AwsLambda.updateLambda(region, lambdaName, bucketId, key) match {
+      case Success(updateFunctionCodeResult) =>
+        (updateFunctionCodeResult.getCodeSha256, updateFunctionCodeResult.getFunctionArn)
+      case Failure(exception) =>
+        sys.error(s"Error updating lambda: ${exception.getLocalizedMessage}\n${exception.getStackTraceString}")
+    }
+
+  private def requestPublishVersion(region: Region, lambdaName: LambdaName, codeSha: String, description: String): String =
+    AwsLambda.publishVersion(region, lambdaName, codeSha, description) match {
+      case Success(result) => result.getFunctionArn
+      case Failure(exception) =>
+        sys.error(s"Error publishing new version of lambda: ${exception.getLocalizedMessage}\n${exception.getStackTraceString}")
+    }
 
   private def resolveRegion(sbtSettingValueOpt: Option[String]): Region =
     sbtSettingValueOpt orElse sys.env.get(EnvironmentVariables.region) map Region getOrElse promptUserForRegion()
@@ -167,12 +187,12 @@ object AwsLambdaPlugin extends AutoPlugin {
     AwsIAM.basicLambdaRole() match {
       case Some(basicRole) =>
         val reuseBasicRole = readInput(s"IAM role '${AwsIAM.BasicLambdaRoleName}' already exists. Reuse this role? (y/n)")
-        
+
         if(reuseBasicRole == "y") RoleARN(basicRole.getArn)
         else readRoleARN()
       case None =>
         val createDefaultRole = readInput(s"Default IAM role for AWS Lambda has not been created yet. Create this role now? (y/n)")
-        
+
         if(createDefaultRole == "y") {
           AwsIAM.createBasicLambdaRole() match {
             case Success(createdRole) =>
@@ -184,6 +204,14 @@ object AwsLambdaPlugin extends AutoPlugin {
         } else readRoleARN()
     }
   }
+
+  private def confirmPublishingNewVersion(codeSha: String, arn: String): Boolean = {
+    val publishNewVersion = readInput(s"Publish version $codeSha to $arn? (y/n)")
+    publishNewVersion == "y"
+  }
+
+  private def promptUserForVersionDescription(): String =
+    readInput(s"Enter version description")
 
   private def readRoleARN(): RoleARN = {
     val inputValue = readInput(s"Enter the ARN of the IAM role for the Lambda. (You also could have set the environment variable: ${EnvironmentVariables.roleArn} or the sbt setting: roleArn)")
